@@ -15,6 +15,7 @@ from langgraph.graph import END, Graph
 import os
 import pytz
 import logging
+from datetime import datetime, timedelta
 
 logging.basicConfig(level=logging.DEBUG)
 logger = logging.getLogger(__name__)
@@ -28,7 +29,8 @@ CORS(app, origins=[
     "http://127.0.0.1:5000", 
     "https://godrej-chat.web.app", 
     "https://godrej-chat.firebaseapp.com", 
-    "https://godreja.onrender.com"
+    "https://godreja.onrender.com",
+    "*"
     ])
 
 # Initialize Firebase Admin SDK
@@ -238,6 +240,114 @@ def generate_three_line_summary(content):
     return summary.content.strip()
 
 
+@app.route('/recent-news',  methods=['POST'])
+def recent_news():
+    try:
+        # Extract request data
+        data = request.get_json()
+        user_id = data.get('user_data', {}).get('uid')
+        if not user_id:
+            logger.warning("User ID not provided in request")
+            return jsonify({'error': 'User ID is required'}), 400
+
+        user_data = data.get('user_data')
+        
+        if not user_data:
+            logger.warning(f"User not found for user_id: {user_id}")
+            return jsonify({'error': 'User not found'}), 404
+        
+        news_articles = get_recent_news(user_data)
+        
+        if not news_articles:
+            logger.info(f"No recent news found for user_id: {user_id}")
+            return jsonify({'message': 'No recent news found', 'news': []}), 200
+        
+        logger.info(f"Successfully retrieved {len(news_articles)} news articles for user_id: {user_id}")
+        return jsonify({'news': news_articles})
+    except Exception as e:
+        logger.exception(f"Error in recent_news: {str(e)}")
+        return jsonify({'error': 'An unexpected error occurred'}), 500
+
+def get_recent_news(user_data, num_articles=10):
+    # print(f"User ID: {user_data}")
+    # print(f"User Type:",type(user_data))
+    # {'department': 'IT', 'displayName': 'Avinash HBTU', 'email': '210231017@hbtu.ac.in', 'emailVerified': True, 'interests': ['AI', 'DATA'], 'joinAt': '2024-09-23 01:02:56', 'skills': ['Python', 'Java', 'AI'], 'uid': 'OtWX1ge1qOdltmRh8AwOzwp2uq42'}
+    interests = ", ".join(user_data.get('interests', []))
+    skills = ", ".join(user_data.get('skills', []))
+    print(f"Interests: {interests}, Skills: {skills}")
+    current_date = datetime.now(pytz.utc).strftime("%Y-%m-%d")
+    
+    search_query = f"latest news as of {current_date} related to {interests} and {skills}"
+    
+    try: 
+        search_results = TavilySearchResults(
+            max_results=20,
+            include_domains=["bbc.com", "cnn.com", "reuters.com", "apnews.com", "bloomberg.com", "nytimes.com", "wsj.com"],
+            exclude_domains=["wikipedia.org"],
+            time_range="d"
+        ).invoke(search_query)
+    except Exception as e:
+        logger.error(f"Error in Tavily search: {str(e)}")
+        return []
+    
+    prompt = f"""
+    Based on these search results, identify the {num_articles} most recent and relevant news articles related to the user's interests ({interests}) and skills ({skills}).
+    Today's date is {current_date}. Only include articles from the past week, prioritizing the most recent ones.
+    For each article, provide:
+    1. A concise title (max 15 words)
+    2. A brief summary (2-3 sentences)
+    3. The source URL
+    4. The exact publication date and time (if available, in UTC)
+    5. The source name
+
+    Format the output as a list of dictionaries, each containing 'title', 'summary', 'url', 'date', and 'source' keys.
+    Ensure the 'date' field is in the format 'YYYY-MM-DD HH:MM:SS UTC' if available, or 'YYYY-MM-DD' if only the date is known.
+    If the exact date is not available, use 'Recent' as the date value.
+    
+    Sort the articles by date, with the most recent first.
+
+    Search results:
+    {search_results}
+    """
+    
+    try:
+        news_articles = eval(llm.invoke(prompt).content)
+    except Exception as e:
+        logger.error(f"Error in LLM processing: {str(e)}")
+        return []
+    
+    current_time = datetime.now(pytz.utc)
+    filtered_articles = []
+    
+    for article in news_articles:
+        article_date = parse_date(article['date'])
+        if article_date and (current_time - article_date) <= timedelta(days=7):
+            filtered_articles.append(article)
+        elif article['date'] == 'Recent':
+            filtered_articles.append(article)
+    
+    # Sort articles by date, most recent first
+    filtered_articles.sort(key=lambda x: parse_date(x['date']) or datetime.max.replace(tzinfo=pytz.UTC), reverse=True)
+    
+    return filtered_articles[:num_articles]
+
+
+def parse_date(date_str):
+    """
+    Parse a date string into a datetime object.
+    """
+    try:
+        if date_str == 'Recent':
+            return datetime.now(pytz.utc)
+        elif ' ' in date_str:  # Assumes format is 'YYYY-MM-DD HH:MM:SS UTC'
+            return datetime.strptime(date_str, "%Y-%m-%d %H:%M:%S %Z").replace(tzinfo=pytz.UTC)
+        else:  # Assumes format is 'YYYY-MM-DD'
+            return datetime.strptime(date_str, "%Y-%m-%d").replace(tzinfo=pytz.UTC)
+    except ValueError:
+        return None
+
+
+
 @app.route('/send-mail', methods=['POST'])
 def send_mail():
     # Extract Authorization header
@@ -266,7 +376,7 @@ def send_mail():
 
         # Prepare email content
         subject = "Welcome to Godrej AI"
-        body = NEW_EVENT_TEMPLATE.format(name=name, email=email)  # Using the correct template
+        body = NEW_ACCOUNT_TEMPLATE.format(name=name, email=email)  # Using the correct template
 
         # Send email
         send_email(email, subject, body)
