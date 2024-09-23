@@ -32,7 +32,7 @@ CORS(app, origins=[
     ])
 
 # Initialize Firebase Admin SDK
-cred = credentials.Certificate('credentials.json')
+cred = credentials.Certificate('/etc/secrets/credentials.json')
 firebase_admin.initialize_app(cred)
 
 # Initialize Flask-Mail
