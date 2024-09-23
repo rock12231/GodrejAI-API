@@ -4,3 +4,8 @@ flask-cors
 python-dotenv
 Flask-Mail
 gunicorn
+langchain
+langchain-openai
+langchain-community
+langgraph
+pytz
